@@ -171,6 +171,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             // exploit and the KernelSU staging steps.
             activeRunShizuku = AppPreferences.shizukuMode(app)
             try {
+                detectRebootLoop()
                 if (shizukuEnabled()) {
                     appendLog(app.getString(R.string.log_shizuku_prepare))
                     if (!ShizukuController.isRunning() && !ShizukuController.pingUntilRunning()) {
@@ -195,6 +196,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 appendLog(app.getString(R.string.log_download_verified))
 
                 setPhase(InstallPhase.Exploiting, app.getString(R.string.status_exploit_running))
+                savePreExploitBootId()
                 executeExploit(payloads.exploit)
 
                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
@@ -202,6 +204,71 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
                 setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
                 appendLog(app.getString(R.string.log_install_complete))
+                finishHistory(InstallRunResult.Succeeded)
+            } catch (error: Throwable) {
+                appendLog("[-] ${error.message ?: error.javaClass.simpleName}")
+                setPhase(InstallPhase.Failed, app.getString(R.string.status_install_failed))
+                finishHistory(InstallRunResult.Failed)
+            } finally {
+                activeRunShizuku = null
+            }
+        }
+    }
+
+    /**
+     * Temp root mode: runs the exploit to get bootstrap root, then verifies
+     * root access without installing KernelSU permanently. This is safer
+     * for devices where the exploit may be unstable.
+     */
+    fun installTempRoot(profileId: String? = null) {
+        if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
+        discoveryJob?.cancel()
+        installJob = viewModelScope.launch(Dispatchers.IO) {
+            mutableState.value = InstallUiState(
+                phase = InstallPhase.Checking,
+                probeOutput = mutableState.value.probeOutput,
+            )
+            startHistory()
+            activeRunShizuku = AppPreferences.shizukuMode(app)
+            try {
+                detectRebootLoop()
+                if (shizukuEnabled()) {
+                    appendLog(app.getString(R.string.log_shizuku_prepare))
+                    if (!ShizukuController.isRunning() && !ShizukuController.pingUntilRunning()) {
+                        error(app.getString(R.string.error_shizuku_unavailable))
+                    }
+                    if (!ShizukuController.isGranted() && !ShizukuController.requestPermission()) {
+                        error(app.getString(R.string.error_shizuku_permission))
+                    }
+                    appendLog(app.getString(R.string.log_shizuku_permission))
+                }
+                setPhase(InstallPhase.Checking, app.getString(R.string.status_checking_github))
+                val profile = if (profileId == null) {
+                    repository.resolveTarget(DeviceSnapshot.current())
+                } else {
+                    repository.resolveTarget(profileId)
+                }
+                appendLog(app.getString(R.string.log_profile, profile.profileId))
+                updateHistoryProfile(profile.profileId)
+
+                setPhase(InstallPhase.Downloading, app.getString(R.string.status_downloading_payload))
+                val payloads = repository.download(profile) { appendLog("[*] $it") }
+                appendLog(app.getString(R.string.log_download_verified))
+
+                setPhase(InstallPhase.Exploiting, app.getString(R.string.status_exploit_running))
+                savePreExploitBootId()
+                executeExploit(payloads.exploit)
+
+                // Skip KernelSU installation - just verify root was obtained
+                appendLog("[*] Verifying root access...")
+                val rootCheck = runHelper("--root-check")
+                if (rootCheck.code == 0 && rootCheck.output.contains("uid=0")) {
+                    appendLog("[+] Root access verified! (uid=0)")
+                    setPhase(InstallPhase.Installed, app.getString(R.string.temp_root_active))
+                } else {
+                    appendLog("[*] Bootstrap root acquired ( KernelSU not installed)")
+                    setPhase(InstallPhase.Installed, app.getString(R.string.temp_root_bootstrap))
+                }
                 finishHistory(InstallRunResult.Succeeded)
             } catch (error: Throwable) {
                 appendLog("[-] ${error.message ?: error.javaClass.simpleName}")
@@ -367,6 +434,47 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val receipt = app.getSharedPreferences(INSTALL_RECEIPT, Application.MODE_PRIVATE)
         return receipt.getString(RECEIPT_BOOT_TOKEN, null) == bootToken &&
             receipt.getBoolean(RECEIPT_VERIFIED, false)
+    }
+
+    /**
+     * Detects if the device rebooted during a previous exploit attempt.
+     * If the pre-exploit boot_id was saved but the current boot_id differs,
+     * it means the exploit caused a kernel panic and the phone rebooted.
+     * After 3 consecutive reboot-detections, block further attempts.
+     */
+    private fun detectRebootLoop() {
+        val prefs = app.getSharedPreferences(REBOOT_DETECTION, Application.MODE_PRIVATE)
+        val savedBootId = prefs.getString(PREF_PRE_EXPLOIT_BOOT_ID, null)
+        val rebootCount = prefs.getInt(PREF_REBOOT_COUNT, 0)
+        val currentBootId = currentBootToken()
+
+        if (savedBootId != null && currentBootId != null && savedBootId != currentBootId) {
+            val newCount = rebootCount + 1
+            prefs.edit()
+                .putInt(PREF_REBOOT_COUNT, newCount)
+                .remove(PREF_PRE_EXPLOIT_BOOT_ID)
+                .apply()
+            if (newCount >= 3) {
+                error(app.getString(R.string.error_reboot_loop))
+            }
+            appendLog("[!] Device rebooted during previous attempt ($newCount/3). Using conservative mode.")
+        } else if (savedBootId == currentBootId) {
+            // Same boot session, reset counter
+            prefs.edit().putInt(PREF_REBOOT_COUNT, 0).apply()
+        }
+    }
+
+    /**
+     * Saves the current boot_id before running the exploit so we can detect
+     * if the device reboots (kernel panic) during exploitation.
+     */
+    private fun savePreExploitBootId() {
+        val bootToken = currentBootToken() ?: return
+        app.getSharedPreferences(REBOOT_DETECTION, Application.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_PRE_EXPLOIT_BOOT_ID, bootToken)
+            .putInt(PREF_REBOOT_COUNT, 0)
+            .commit()
     }
 
     private fun storeInstallReceipt() {
@@ -544,12 +652,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private fun File.readTextIfPresent(): String = if (exists()) readText() else ""
 
     companion object {
-        private const val EXPLOIT_ATTEMPTS = "24"
-        private const val P0_ATTEMPT_TIMEOUT_SEC = "45"
-        private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "120"
-        private const val EXPLOIT_STALL_MILLIS = 90_000L
-        private const val EXPLOIT_TOTAL_MILLIS = 900_000L
-        private const val HELPER_TIMEOUT_MILLIS = 120_000L
+        private const val EXPLOIT_ATTEMPTS = "3"
+        private const val P0_ATTEMPT_TIMEOUT_SEC = "90"
+        private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "180"
+        private const val EXPLOIT_STALL_MILLIS = 120_000L
+        private const val EXPLOIT_TOTAL_MILLIS = 300_000L
+        private const val HELPER_TIMEOUT_MILLIS = 180_000L
         private const val INSTALL_RECEIPT = "install_receipt"
         private const val RECEIPT_BOOT_TOKEN = "kernel_boot_id"
         private const val RECEIPT_VERIFIED = "verified"
@@ -559,6 +667,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         private const val P0_OFFSET_ENV = "SLIDE_P0_OFFSET"
         private const val P0_OFFSET_MAX = 0x1f0000L
         private const val P0_OFFSET_MASK = 0xffffL
+        private const val REBOOT_DETECTION = "reboot_detection"
+        private const val PREF_PRE_EXPLOIT_BOOT_ID = "pre_exploit_boot_id"
+        private const val PREF_REBOOT_COUNT = "reboot_count"
         private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"
         private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
         private const val SHIZUKU_PAYLOAD_PATH = "/data/local/tmp/ksu-payload"

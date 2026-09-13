@@ -69,6 +69,7 @@ class InstallActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val profileId = intent.getStringExtra(EXTRA_PROFILE_ID)
+        val tempRootMode = intent.getBooleanExtra(EXTRA_TEMP_ROOT, false)
         val startInstall = savedInstanceState == null && AppPreferences.consumeInstallRequest(
             this,
             intent.getStringExtra(EXTRA_INSTALL_REQUEST_ID),
@@ -82,11 +83,24 @@ class InstallActivity : ComponentActivity() {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
                 BackHandler(enabled = installState.busy) {}
                 LaunchedEffect(startInstall, profileId) {
-                    if (startInstall) installViewModel.install(profileId)
+                    if (startInstall) {
+                        if (tempRootMode) {
+                            installViewModel.installTempRoot(profileId)
+                        } else {
+                            installViewModel.install(profileId)
+                        }
+                    }
                 }
                 InstallScreen(
                     installState = installState,
-                    onRetry = { installViewModel.install(profileId) },
+                    tempRootMode = tempRootMode,
+                    onRetry = {
+                        if (tempRootMode) {
+                            installViewModel.installTempRoot(profileId)
+                        } else {
+                            installViewModel.install(profileId)
+                        }
+                    },
                     onClose = ::finish,
                 )
             }
@@ -96,6 +110,7 @@ class InstallActivity : ComponentActivity() {
     companion object {
         const val EXTRA_INSTALL_REQUEST_ID = "install_request_id"
         const val EXTRA_PROFILE_ID = "profile_id"
+        const val EXTRA_TEMP_ROOT = "temp_root"
     }
 }
 
@@ -125,6 +140,7 @@ private fun clickHaptic(view: View) {
 @Composable
 private fun InstallScreen(
     installState: InstallUiState,
+    tempRootMode: Boolean = false,
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -148,7 +164,11 @@ private fun InstallScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.install_title),
+                    text = if (tempRootMode) {
+                        stringResource(R.string.action_temp_root)
+                    } else {
+                        stringResource(R.string.install_title)
+                    },
                     style = MaterialTheme.typography.headlineLarge,
                 )
                 Text(

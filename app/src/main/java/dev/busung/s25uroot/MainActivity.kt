@@ -198,9 +198,10 @@ class MainActivity : ComponentActivity() {
                         AppPreferences.setShizukuMode(this, enabled)
                         shizukuMode = enabled
                     },
-                    openInstaller = { profileId ->
+                    openInstaller = { profileId, tempRoot ->
                         val installer = Intent(this, InstallActivity::class.java)
                             .putExtra(InstallActivity.EXTRA_INSTALL_REQUEST_ID, UUID.randomUUID().toString())
+                            .putExtra(InstallActivity.EXTRA_TEMP_ROOT, tempRoot)
                         if (profileId != null) {
                             installer.putExtra(InstallActivity.EXTRA_PROFILE_ID, profileId)
                         }
@@ -283,7 +284,7 @@ private fun RootApp(
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
     onShizukuModeChanged: (Boolean) -> Unit,
-    openInstaller: (String?) -> Unit,
+    openInstaller: (String?, Boolean) -> Unit,
 ) {
     val installState by installViewModel.state.collectAsStateWithLifecycle()
     val history by installViewModel.history.collectAsStateWithLifecycle()
@@ -432,18 +433,28 @@ private fun RootApp(
                 FilledTonalButton(onClick = {
                     clickHaptic(view)
                     showInstallConfirmation = false
-                    openInstaller(selectedProfile?.profileId)
+                    openInstaller(selectedProfile?.profileId, false)
                     selectedProfile = null
                 }) {
                     Text(stringResource(R.string.action_confirm))
                 }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    clickHaptic(view)
-                    showInstallConfirmation = false
-                }) {
-                    Text(stringResource(R.string.action_cancel))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        clickHaptic(view)
+                        showInstallConfirmation = false
+                        openInstaller(selectedProfile?.profileId, true)
+                        selectedProfile = null
+                    }) {
+                        Text(stringResource(R.string.action_temp_root))
+                    }
+                    TextButton(onClick = {
+                        clickHaptic(view)
+                        showInstallConfirmation = false
+                    }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
                 }
             },
         )

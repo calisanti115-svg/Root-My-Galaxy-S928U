@@ -115,6 +115,11 @@
     <string name="error_helper_timeout">KernelSU helper did not exit within 120 seconds%1$s</string>
     <string name="error_boot_id">Unable to read the current boot_id</string>
     <string name="error_receipt">Unable to save the installation verification receipt</string>
+    <string name="error_reboot_loop">Exploit caused 3 consecutive reboots. Your firmware may need a different exploit binary. Stopping to prevent boot loop.</string>
+    <string name="temp_root_active">Temporary root active</string>
+    <string name="temp_root_bootstrap">Bootstrap root acquired (temp)</string>
+    <string name="action_temp_root">Temp Root</string>
+    <string name="install_confirm_temp_body">Run the exploit to get temporary root access without installing KernelSU permanently. Safer for unstable firmware.</string>
 
     <string name="artifact_exploit">exploit</string>
     <string name="artifact_kernelsu">KernelSU</string>
