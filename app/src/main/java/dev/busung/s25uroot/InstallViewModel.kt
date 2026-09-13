@@ -216,9 +216,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * Temp root mode: runs the exploit to get bootstrap root, then verifies
-     * root access without installing KernelSU permanently. This is safer
-     * for devices where the exploit may be unstable.
+     * Temp root mode: tries alternative root methods (no CVE exploit)
+     * that don't crash the kernel. Falls back to CVE exploit if
+     * alternative methods fail.
      */
     fun installTempRoot(profileId: String? = null) {
         if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
@@ -255,21 +255,52 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 val payloads = repository.download(profile) { appendLog("[*] $it") }
                 appendLog(app.getString(R.string.log_download_verified))
 
-                setPhase(InstallPhase.Exploiting, app.getString(R.string.status_exploit_running))
+                /* Phase 1: Try alternative root methods (no CVE, no kernel crash) */
+                setPhase(InstallPhase.Exploiting, app.getString(R.string.status_alt_root_trying))
                 savePreExploitBootId()
-                executeExploit(payloads.exploit)
 
-                // Skip KernelSU installation - just verify root was obtained
-                appendLog("[*] Verifying root access...")
-                val rootCheck = runHelper("--root-check")
-                if (rootCheck.code == 0 && rootCheck.output.contains("uid=0")) {
-                    appendLog("[+] Root access verified! (uid=0)")
+                appendLog("[*] Phase 1: Trying alternative root methods (safe, no kernel crash)...")
+                val altRootSuccess = RootShellProvider.attemptRoot { line -> appendLog(line) }
+
+                if (altRootSuccess) {
+                    /* Alternative methods worked! */
+                    val marker = File(app.filesDir, "root_marker.txt")
+                    RootShellProvider.writeRootMarker(marker.absolutePath)
+                    appendLog("[+] Alternative root methods succeeded!")
                     setPhase(InstallPhase.Installed, app.getString(R.string.temp_root_active))
+                    finishHistory(InstallRunResult.Succeeded)
                 } else {
-                    appendLog("[*] Bootstrap root acquired ( KernelSU not installed)")
-                    setPhase(InstallPhase.Installed, app.getString(R.string.temp_root_bootstrap))
+                    /* Phase 2: Alternative methods failed, try CVE exploit as fallback */
+                    appendLog("")
+                    appendLog("[*] Phase 2: Alternative methods insufficient, trying CVE exploit (may reboot)...")
+                    appendLog("[!] WARNING: The CVE exploit may cause a kernel panic and reboot!")
+                    setPhase(InstallPhase.Exploiting, app.getString(R.string.status_exploit_running))
+
+                    try {
+                        executeExploit(payloads.exploit)
+
+                        setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
+                        installKernelSu(payloads)
+
+                        setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
+                        appendLog(app.getString(R.string.log_install_complete))
+                        finishHistory(InstallRunResult.Succeeded)
+                    } catch (exploitError: Throwable) {
+                        appendLog("[-] CVE exploit also failed: ${exploitError.message}")
+                        appendLog("")
+                        appendLog("[*] Neither method worked. Possible reasons:")
+                        appendLog("    - Firmware too new (security patches applied)")
+                        appendLog("    - Kernel hardened against this exploit class")
+                        appendLog("    - SELinux blocking exploitation")
+                        appendLog("")
+                        appendLog("[*] Alternatives to try:")
+                        appendLog("    1. Downgrade to compatible firmware (S928USQS6DZF2)")
+                        appendLog("    2. Use Magisk with boot image patching")
+                        appendLog("    3. Wait for updated exploit from Root-My-Galaxy")
+                        setPhase(InstallPhase.Failed, app.getString(R.string.status_install_failed))
+                        finishHistory(InstallRunResult.Failed)
+                    }
                 }
-                finishHistory(InstallRunResult.Succeeded)
             } catch (error: Throwable) {
                 appendLog("[-] ${error.message ?: error.javaClass.simpleName}")
                 setPhase(InstallPhase.Failed, app.getString(R.string.status_install_failed))
