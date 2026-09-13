@@ -165,12 +165,12 @@ static int try_bpf_root(void) {
         /* Verify BPF is working by writing to a map */
         uint32_t key = 0;
         uint64_t value = 0xDEADBEEF;
-        struct bpf_map_update_elem update_attr = {
-            .map_fd = big_fd,
-            .key = &key,
-            .value = &value,
-            .flags = 0,
-        };
+        union bpf_attr update_attr;
+        memset(&update_attr, 0, sizeof(update_attr));
+        update_attr.map_fd = big_fd;
+        update_attr.key = (uint64_t)(unsigned long)&key;
+        update_attr.value = (uint64_t)(unsigned long)&value;
+        update_attr.flags = 0;
         int ret = (int)syscall(SYS_bpf, BPF_MAP_UPDATE_ELEM, &update_attr, sizeof(update_attr));
         if (ret == 0) {
             LOGI("  BPF map write successful\n");
@@ -178,11 +178,11 @@ static int try_bpf_root(void) {
 
         /* Read back */
         uint64_t read_value = 0;
-        struct bpf_map_lookup_elem lookup_attr = {
-            .map_fd = big_fd,
-            .key = &key,
-            .value = &read_value,
-        };
+        union bpf_attr lookup_attr;
+        memset(&lookup_attr, 0, sizeof(lookup_attr));
+        lookup_attr.map_fd = big_fd;
+        lookup_attr.key = (uint64_t)(unsigned long)&key;
+        lookup_attr.value = (uint64_t)(unsigned long)&read_value;
         ret = (int)syscall(SYS_bpf, BPF_MAP_LOOKUP_ELEM, &lookup_attr, sizeof(lookup_attr));
         if (ret == 0 && read_value == 0xDEADBEEF) {
             LOGI("  BPF read/write verified\n");
